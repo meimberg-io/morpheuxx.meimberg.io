@@ -14,6 +14,7 @@ type UsageRecord = {
   status?: 'ok' | 'error';
   cost?: number;
   tokens?: number;
+  agentId?: string;
 };
 
 type ApiResponse = {
@@ -21,6 +22,19 @@ type ApiResponse = {
   endMs: number;
   records: UsageRecord[];
   warnings: string[];
+  providerTruth?: {
+    openai?: {
+      available: boolean;
+      totalCost?: number;
+      rows?: number;
+      byProject?: Array<{ projectId: string; amountUsd: number }>;
+      byLineItem?: Array<{ lineItem: string; amountUsd: number }>;
+    };
+  };
+  attribution?: {
+    totalCost?: number;
+    gapToOpenAI?: number;
+  };
 };
 
 type Metric = 'cost' | 'tokens';
@@ -83,7 +97,9 @@ export default function UsageDashboard() {
   const [kind, setKind] = useState<'all' | 'cron' | 'heartbeat' | 'interactive'>('all');
   const [model, setModel] = useState<string>('all');
   const [job, setJob] = useState<string>('all');
+  const [agent, setAgent] = useState<string>('all');
   const [bucket, setBucket] = useState<'day' | 'hour'>('day');
+  const [bucketTouched, setBucketTouched] = useState(false);
   const [metric, setMetric] = useState<Metric>('cost');
 
   useEffect(() => {
@@ -91,8 +107,8 @@ export default function UsageDashboard() {
     const delta = range === '24h' ? 24 * 3600e3 : range === '30d' ? 30 * 24 * 3600e3 : 7 * 24 * 3600e3;
     const startMs = now - delta;
 
-    // Auto-bucket: 24h => hour, else => day
-    setBucket(range === '24h' ? 'hour' : 'day');
+    // Auto-bucket: only if user hasn't manually touched the bucket selector
+    if (!bucketTouched) setBucket(range === '24h' ? 'hour' : 'day');
 
     setLoading(true);
     fetch(`/api/reports/usage?startMs=${startMs}&endMs=${now}`)
@@ -109,12 +125,14 @@ export default function UsageDashboard() {
     // Add synthetic jobs so they can be shown/filtered like jobs.
     return ['all', 'heartbeat', 'interactive', ...cronJobs];
   }, [records]);
+  const agentOptions = useMemo(() => ['all', ...uniq(records.map(r => r.agentId || 'main'))], [records]);
 
   const filtered = useMemo(() => {
     return records.filter(r => {
       if (kind !== 'all' && r.kind !== kind) return false;
       const m = r.model || 'unknown';
       if (model !== 'all' && m !== model) return false;
+      if (agent !== 'all' && (r.agentId || 'main') !== agent) return false;
       if (job !== 'all') {
         const j = r.kind === 'heartbeat'
           ? 'heartbeat'
@@ -125,7 +143,7 @@ export default function UsageDashboard() {
       }
       return true;
     });
-  }, [records, kind, model, job]);
+  }, [records, kind, model, job, agent]);
 
   const totals = useMemo(() => {
     return {
@@ -135,16 +153,65 @@ export default function UsageDashboard() {
     };
   }, [filtered]);
 
+  const providerTruth = data?.providerTruth?.openai;
+  const attributionSummary = data?.attribution;
+
+  function fmtDayUtc(ms: number) {
+    const d = new Date(ms);
+    const y = d.getUTCFullYear();
+    const m = String(d.getUTCMonth() + 1).padStart(2, '0');
+    const day = String(d.getUTCDate()).padStart(2, '0');
+    return `${y}-${m}-${day}`;
+  }
+
+  function fmtHourUtc(ms: number) {
+    const d = new Date(ms);
+    const y = d.getUTCFullYear();
+    const m = String(d.getUTCMonth() + 1).padStart(2, '0');
+    const day = String(d.getUTCDate()).padStart(2, '0');
+    const h = String(d.getUTCHours()).padStart(2, '0');
+    return `${y}-${m}-${day}T${h}`;
+  }
+
+  function floorToHour(ms: number) {
+    return Math.floor(ms / 3600e3) * 3600e3;
+  }
+
+  function floorToDay(ms: number) {
+    const d = new Date(ms);
+    return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate());
+  }
+
   const timeSeries = useMemo(() => {
+    const startMs = data?.startMs ?? Date.now() - 7 * 24 * 3600e3;
+    const endMs = data?.endMs ?? Date.now();
+
+    // Build a complete axis (fill missing buckets with zeros)
+    const keys: string[] = [];
+    if (bucket === 'hour') {
+      let cur = floorToHour(startMs);
+      const end = floorToHour(endMs);
+      while (cur <= end) {
+        keys.push(fmtHourUtc(cur));
+        cur += 3600e3;
+      }
+    } else {
+      let cur = floorToDay(startMs);
+      const end = floorToDay(endMs);
+      while (cur <= end) {
+        keys.push(fmtDayUtc(cur));
+        cur += 24 * 3600e3;
+      }
+    }
+
     const keyFn = (r: UsageRecord) => (bucket === 'day' ? r.day : r.hour);
     const g = groupBy(filtered, keyFn);
-    const keys = Array.from(g.keys()).sort();
 
     const cost = keys.map(k => sum((g.get(k) || []).map(r => r.cost)));
     const tokens = keys.map(k => sum((g.get(k) || []).map(r => r.tokens)));
 
     return { keys, cost, tokens };
-  }, [filtered, bucket]);
+  }, [filtered, bucket, data?.startMs, data?.endMs]);
 
   const pivot = useMemo(() => {
     // Include heartbeats + interactive as synthetic jobs so they show up in the matrix.
@@ -333,6 +400,64 @@ export default function UsageDashboard() {
     };
   }, [filtered, timeSeries.keys, bucket, pivot.rows]);
 
+  const stackedCostByAgentOptions = useMemo(() => {
+    const keys = timeSeries.keys;
+    const agents = uniq(filtered.map(r => r.agentId || 'main'));
+
+    const seriesMap = new Map<string, Map<string, number>>();
+    const ensure = (name: string) => {
+      if (!seriesMap.has(name)) seriesMap.set(name, new Map());
+      return seriesMap.get(name)!;
+    };
+
+    for (const r of filtered) {
+      const k = bucket === 'day' ? r.day : r.hour;
+      const a = r.agentId || 'main';
+      const am = ensure(a);
+      am.set(k, (am.get(k) || 0) + (Number.isFinite(r.cost as number) ? (r.cost as number) : 0));
+    }
+
+    return {
+      tooltip: { trigger: 'axis' },
+      legend: {
+        type: 'scroll',
+        orient: 'vertical',
+        right: 8,
+        top: 24,
+        bottom: 24,
+        selectedMode: true,
+        textStyle: { color: '#a3a3a3' },
+      },
+      grid: { left: 40, right: 220, top: 24, bottom: 24, containLabel: true },
+      xAxis: { type: 'category', data: keys, axisLabel: { color: '#a3a3a3' }, axisLine: { lineStyle: { color: '#262626' } } },
+      yAxis: { type: 'value', axisLabel: { color: '#a3a3a3' }, splitLine: { lineStyle: { color: 'rgba(255,255,255,0.06)' } } },
+      series: agents.map((a) => ({
+        name: a,
+        type: 'bar',
+        stack: 'total',
+        emphasis: { focus: 'series' },
+        data: keys.map((k) => (seriesMap.get(a)?.get(k) || 0)),
+      })),
+      backgroundColor: 'transparent',
+      textStyle: { color: '#fafafa' },
+    };
+  }, [filtered, timeSeries.keys, bucket]);
+
+  const chartByAgentRef = useRef<any>(null);
+
+  // When global filters change, reset chart legends so charts don't look "inconsistent"
+  // due to previously hidden series (ECharts keeps legend selection state by name).
+  useEffect(() => {
+    suppressLegendHandlerRef.current = true;
+    const instM = chartByModelRef.current?.getEchartsInstance?.();
+    instM?.dispatchAction?.({ type: 'legendAllSelect' });
+    const instJ = chartByJobRef.current?.getEchartsInstance?.();
+    instJ?.dispatchAction?.({ type: 'legendAllSelect' });
+    const instA = chartByAgentRef.current?.getEchartsInstance?.();
+    instA?.dispatchAction?.({ type: 'legendAllSelect' });
+    setTimeout(() => (suppressLegendHandlerRef.current = false), 0);
+  }, [range, kind, model, job, agent, bucket, metric]);
+
   const formatMetric = (v: number, opts?: { total?: boolean }) => {
     if (metric === 'tokens') {
       // Hide zeros for readability (except totals)
@@ -384,8 +509,22 @@ export default function UsageDashboard() {
           </select>
         </div>
         <div className="usage-control">
+          <label>Agent</label>
+          <select value={agent} onChange={e => setAgent(e.target.value)}>
+            {agentOptions.map(a => (
+              <option key={a} value={a}>{a}</option>
+            ))}
+          </select>
+        </div>
+        <div className="usage-control">
           <label>Bucket</label>
-          <select value={bucket} onChange={e => setBucket(e.target.value as any)}>
+          <select
+            value={bucket}
+            onChange={e => {
+              setBucketTouched(true);
+              setBucket(e.target.value as any);
+            }}
+          >
             <option value="day">Day</option>
             <option value="hour">Hour</option>
           </select>
@@ -404,7 +543,9 @@ export default function UsageDashboard() {
           ) : (
             <>
               <div className="usage-summary-item"><span>Rows</span><strong>{totals.rows}</strong></div>
-              <div className="usage-summary-item"><span>Cost</span><strong>{fmtMoneyUSD(totals.cost)}</strong></div>
+              <div className="usage-summary-item"><span>Attributed</span><strong>{fmtMoneyUSD(attributionSummary?.totalCost ?? totals.cost)}</strong></div>
+              <div className="usage-summary-item"><span>OpenAI Truth</span><strong>{providerTruth?.available ? fmtMoneyUSD(providerTruth.totalCost) : '—'}</strong></div>
+              <div className="usage-summary-item"><span>Gap</span><strong>{providerTruth?.available ? fmtMoneyUSD(attributionSummary?.gapToOpenAI) : '—'}</strong></div>
               <div className="usage-summary-item"><span>Tokens</span><strong>{fmtInt(totals.tokens)}</strong></div>
             </>
           )}
@@ -419,6 +560,63 @@ export default function UsageDashboard() {
           </ul>
         </div>
       ) : null}
+
+      <section className="usage-card">
+        <div className="usage-card-header">
+          <h2>Truth vs Attributed</h2>
+          <p>Provider truth = echte OpenAI-Kosten. Attributed = aus Sessions rekonstruierte Zuordnung.</p>
+        </div>
+
+        <div className="usage-table-wrap">
+          <table className="usage-table">
+            <thead>
+              <tr>
+                <th className="sticky left">View</th>
+                <th className="sticky right">Cost</th>
+                <th className="sticky left">Notes</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td className="left mono">Attributed</td>
+                <td className="right mono strong">{fmtMoneyUSD(attributionSummary?.totalCost ?? totals.cost)}</td>
+                <td className="left">Session-/Message-basierte Attribution aus OpenClaw.</td>
+              </tr>
+              <tr>
+                <td className="left mono">OpenAI provider truth</td>
+                <td className="right mono strong">{providerTruth?.available ? fmtMoneyUSD(providerTruth.totalCost) : '—'}</td>
+                <td className="left">Direkt vom Provider ingestete Kosten.</td>
+              </tr>
+              <tr>
+                <td className="left mono">Gap</td>
+                <td className="right mono strong">{providerTruth?.available ? fmtMoneyUSD(attributionSummary?.gapToOpenAI) : '—'}</td>
+                <td className="left">Differenz zwischen Provider-Truth und Attribution.</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        {providerTruth?.available ? (
+          <div className="usage-table-wrap" style={{ marginTop: '1rem' }}>
+            <table className="usage-table">
+              <thead>
+                <tr>
+                  <th className="sticky left">OpenAI project</th>
+                  <th className="sticky right">Cost</th>
+                </tr>
+              </thead>
+              <tbody>
+                {(providerTruth.byProject || []).slice().sort((a, b) => b.amountUsd - a.amountUsd).map((r) => (
+                  <tr key={r.projectId}>
+                    <td className="left mono">{r.projectId}</td>
+                    <td className="right mono">{fmtMoneyUSD(r.amountUsd)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ) : null}
+      </section>
 
       <section className="usage-card">
         <div className="usage-card-header">
@@ -510,6 +708,54 @@ export default function UsageDashboard() {
               legendselectchanged: (e: any) => {
                 if (suppressLegendHandlerRef.current) return;
                 const inst = chartByJobRef.current?.getEchartsInstance?.();
+                if (!inst) return;
+
+                const selected = e?.selected || {};
+                const clicked = e?.name;
+                if (!clicked) return;
+
+                if (selected[clicked] === true) {
+                  for (const k of Object.keys(selected)) {
+                    if (k !== clicked && selected[k] === true) {
+                      inst.dispatchAction({ type: 'legendUnSelect', name: k });
+                    }
+                  }
+                }
+              },
+            }}
+          />
+        </div>
+      </section>
+
+      <section className="usage-card">
+        <div className="usage-card-header" style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: '1rem' }}>
+          <div>
+            <h2>Stacked bars — Cost by agent</h2>
+            <p>Zeigt, welche Agents über die Zeit die Kosten treiben.</p>
+          </div>
+          <button
+            className="usage-small-btn"
+            onClick={() => {
+              suppressLegendHandlerRef.current = true;
+              const inst = chartByAgentRef.current?.getEchartsInstance?.();
+              inst?.dispatchAction?.({ type: 'legendAllSelect' });
+              setTimeout(() => (suppressLegendHandlerRef.current = false), 0);
+            }}
+          >
+            Show all
+          </button>
+        </div>
+        <div className="usage-chart">
+          <ReactECharts
+            ref={chartByAgentRef}
+            option={stackedCostByAgentOptions as any}
+            style={{ height: 360, width: '100%' }}
+            notMerge
+            lazyUpdate
+            onEvents={{
+              legendselectchanged: (e: any) => {
+                if (suppressLegendHandlerRef.current) return;
+                const inst = chartByAgentRef.current?.getEchartsInstance?.();
                 if (!inst) return;
 
                 const selected = e?.selected || {};

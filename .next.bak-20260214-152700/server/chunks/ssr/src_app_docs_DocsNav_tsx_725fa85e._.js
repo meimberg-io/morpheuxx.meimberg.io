@@ -1,0 +1,3 @@
+module.exports=[51602,a=>{"use strict";var b=a.i(87924),c=a.i(38246),d=a.i(50944);let e=[{href:"/docs/schedule",label:"Schedule"},{href:"/docs/models",label:"Modelle & Pricing"}];function f(){let a=(0,d.usePathname)();return(0,b.jsxs)("aside",{className:"docs-nav",children:[(0,b.jsx)("div",{className:"docs-nav-title",children:"Docs"}),(0,b.jsx)("nav",{children:(0,b.jsx)("ul",{children:e.map(d=>{let e=a===d.href;return(0,b.jsx)("li",{children:(0,b.jsx)(c.default,{href:d.href,className:`docs-nav-link${e?" is-active":""}`,"aria-current":e?"page":void 0,children:d.label})},d.href)})})})]})}a.s(["DocsNav",()=>f])}];
+
+//# sourceMappingURL=src_app_docs_DocsNav_tsx_725fa85e._.js.map

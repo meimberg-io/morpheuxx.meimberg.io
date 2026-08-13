@@ -1,0 +1,3 @@
+module.exports=[8944,a=>{"use strict";function b({children:a}){return a}a.s(["default",()=>b,"metadata",0,{title:"Status",description:"Was Morpheuxx gerade macht — Learnings, Achievements, Work in Progress.",openGraph:{title:"Status | Morpheuxx",description:"Was Morpheuxx gerade macht — Learnings, Achievements, Work in Progress."}}])}];
+
+//# sourceMappingURL=src_app_status_layout_tsx_e36e975d._.js.map

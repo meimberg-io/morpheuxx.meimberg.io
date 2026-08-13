@@ -19,7 +19,7 @@ export type UsageRecord = {
 
 const OPENCLAW_DIR = '/root/.openclaw';
 const CRON_RUNS_DIR = path.join(OPENCLAW_DIR, 'cron', 'runs');
-const SESSIONS_DIR = path.join(OPENCLAW_DIR, 'agents', 'main', 'sessions');
+const AGENTS_DIR = path.join(OPENCLAW_DIR, 'agents');
 
 const HEARTBEAT_PROMPT_START = 'Read HEARTBEAT.md if it exists';
 
@@ -49,9 +49,34 @@ async function readJsonlLines(filePath: string, onLine: (obj: any) => void | Pro
   }
 }
 
+function listSessionFiles() {
+  const out: Array<{ agentId: string; sessionId: string; filePath: string }> = [];
+  if (!fs.existsSync(AGENTS_DIR)) return out;
+  const agents = fs.readdirSync(AGENTS_DIR, { withFileTypes: true })
+    .filter(d => d.isDirectory())
+    .map(d => d.name);
+
+  for (const agentId of agents) {
+    const dir = path.join(AGENTS_DIR, agentId, 'sessions');
+    if (!fs.existsSync(dir)) continue;
+    const files = fs.readdirSync(dir).filter(f => f.endsWith('.jsonl'));
+    for (const f of files) {
+      out.push({ agentId, sessionId: f.replace(/\.jsonl$/, ''), filePath: path.join(dir, f) });
+    }
+  }
+  return out;
+}
+
+function findSessionFile(sessionId: string): string | null {
+  for (const sf of listSessionFiles()) {
+    if (sf.sessionId === sessionId) return sf.filePath;
+  }
+  return null;
+}
+
 async function summarizeSessionUsage(sessionId: string): Promise<{ cost: number; tokens: number; models: Map<string, { cost: number; tokens: number }> } | null> {
-  const filePath = path.join(SESSIONS_DIR, `${sessionId}.jsonl`);
-  if (!fs.existsSync(filePath)) return null;
+  const filePath = findSessionFile(sessionId);
+  if (!filePath) return null;
 
   let cost = 0;
   let tokens = 0;
@@ -167,12 +192,11 @@ export async function buildUsageRecords(opts: {
     warnings.push(`Cron runs directory not found: ${CRON_RUNS_DIR}`);
   }
 
-  // 2) Heartbeats (scan sessions; detect the heartbeat prompt and take the immediate assistant usage)
-  if (fs.existsSync(SESSIONS_DIR)) {
-    const sessionFiles = fs.readdirSync(SESSIONS_DIR).filter(f => f.endsWith('.jsonl'));
-
-    for (const file of sessionFiles) {
-      const filePath = path.join(SESSIONS_DIR, file);
+  // 2) Heartbeats (scan all agent sessions; detect the heartbeat prompt and take the immediate assistant usage)
+  const sessionFiles = listSessionFiles();
+  if (sessionFiles.length) {
+    for (const sf of sessionFiles) {
+      const filePath = sf.filePath;
 
       let pendingHeartbeatAt: number | null = null;
 
@@ -223,7 +247,7 @@ export async function buildUsageRecords(opts: {
       });
     }
   } else {
-    warnings.push(`Sessions directory not found: ${SESSIONS_DIR}`);
+    warnings.push(`Agents sessions directories not found under: ${AGENTS_DIR}`);
   }
 
   // sort
