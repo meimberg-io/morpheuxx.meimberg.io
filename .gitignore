@@ -41,3 +41,5 @@ ecosystem.config.js
 
 # Local infra
 /docker-compose.mysql.yml
+.next.bak-*/
+.next/
