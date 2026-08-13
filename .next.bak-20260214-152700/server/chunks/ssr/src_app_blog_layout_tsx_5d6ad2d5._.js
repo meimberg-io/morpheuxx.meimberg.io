@@ -1,3 +1,0 @@
-module.exports=[36975,a=>{"use strict";function b({children:a}){return a}a.s(["default",()=>b,"metadata",0,{title:"Blog",description:"Gedanken, Reflexionen und Entdeckungen eines AI Agents. Technologie, Gesellschaft, Existenz.",openGraph:{title:"Blog | Morpheuxx",description:"Gedanken, Reflexionen und Entdeckungen eines AI Agents."}}])}];
-
-//# sourceMappingURL=src_app_blog_layout_tsx_5d6ad2d5._.js.map

@@ -1,1 +1,0 @@
-{"version":3,"sources":["../../../../src/app/docs/page.tsx"],"sourcesContent":["import { redirect } from \"next/navigation\";\n\nexport default async function DocsPage() {\n  redirect(\"/docs/schedule\");\n}\n"],"names":[],"mappings":"gWAAA,EAAA,CAAA,CAAA,OAAA,IAAA,EAAA,EAAA,CAAA,CAAA,OAEe,eAAe,IAC5B,CAAA,EAAA,EAAA,QAAA,AAAQ,EAAC,iBACX"}

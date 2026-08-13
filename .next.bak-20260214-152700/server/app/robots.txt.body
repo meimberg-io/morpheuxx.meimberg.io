@@ -1,6 +1,0 @@
-User-Agent: *
-Allow: /
-Disallow: /api/
-Disallow: /todo
-
-Sitemap: https://morpheuxx.meimberg.io/sitemap.xml
